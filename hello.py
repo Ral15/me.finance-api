@@ -1,48 +1,126 @@
 import os
-from flask import Flask 
+from flask import Flask, request
+from flask_restful import Resource, Api, reqparse, fields, marshal_with
 from flask_sqlalchemy import SQLAlchemy
+from flask_script import Manager
+from flask_script import Shell
+from flask_migrate import Migrate, MigrateCommand
 
 basedir = os.path.abspath(os.path.dirname(__file__))
 
 app = Flask(__name__)
+api = Api(app)
 app.config['SQLALCHEMY_DATABASE_URI'] =\
     'sqlite:///' + os.path.join(basedir, 'data.sqlite')
 app.config['SQLALCHEMY_COMMIT_ON_TEARDOWN'] = True
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = True
 db = SQLAlchemy(app)
 
+manager = Manager(app)
 
-class Role(db.Model):
-	__tablename__ = 'role'
-	id = db.Column(db.Integer, primary_key=True)
-	is_premium = db.Column(db.Boolean(), default=False)
+def make_shell_context():
+	return dict(app=app, db=db, User=User, Bill=Bill, Income=Income, Payment=Payment, Category=Category, Tip=Tip)
+manager.add_command("shell", Shell(make_context=make_shell_context))
 
-	def __repr__(self):
-		return '<Role %r>' % self.is_premium
+migrate = Migrate(app,db)
+manager.add_command('db', MigrateCommand)
 
 class User(db.Model):
 	__tablename__ = 'users'
-	id = db.Column(db.Integer, primary_key=True)
+	id = db.Column(db.Integer, primary_key=True, unique=True)
 	username = db.Column(db.String(64), unique=True, index=True)
 	first_name = db.Column(db.String(64))
 	last_name = db.Column(db.String(64))
+	bills = db.relationship('Bill')
+	incomes = db.relationship('Income', backref='user', lazy='dynamic')
+	payments = db.relationship('Payment', backref='user', lazy='dynamic')
+	is_premium = db.Column(db.Boolean(), default=True)
 
 	def __repr__(self):
 		return '<User %r>' % self.username
 
-# class Bill(db.Model):
-# 	__table__name = 'bill'
-# 	id = db.Column(db.Integer, primary_key=True)
+class Bill(db.Model):
+	__tablename__ = 'bills'
+	id = db.Column(db.Integer, primary_key=True, unique=True)
+	user_id = db.Column(db.Integer, db.ForeignKey('users.id'))
+	payment_id = db.Column(db.Integer, db.ForeignKey('payments.id'))
+	category_id = db.Column(db.Integer, db.ForeignKey('categories.id'))
+	name = db.Column(db.String(64))
+	description = db.Column(db.String(64))
+	amount = db.Column(db.Float())
+	due_date = db.Column(db.DateTime())
+	paid_date = db.Column(db.Integer, db.ForeignKey('payments.paid_date'))
+	# is_paid = db.Column(db.Boolean())
+
+	def __repr__(self):
+		return '<Bill %r>' % self.name
+
+class Income(db.Model):
+	__tablename__ = 'incomes'
+	id = db.Column(db.Integer, primary_key=True, unique=True)
+	user_id = db.Column(db.Integer, db.ForeignKey('users.id'))
+	category_id = db.Column(db.Integer, db.ForeignKey('categories.id'))
+	name = db.Column(db.String(64))
+	description = db.Column(db.String(64))
+	amount = db.Column(db.Float())
+	received_date = db.Column(db.DateTime())
+
+	def __repr__(self):
+		return '<Income %r>' % self.name
+
+class Payment(db.Model):
+	__tablename__ = 'payments'
+	id = db.Column(db.Integer, primary_key=True, unique=True)
+	user_id = db.Column(db.Integer, db.ForeignKey('users.id'))
+	category_id = db.Column(db.Integer, db.ForeignKey('categories.id'))
+	name = db.Column(db.String(64))
+	description = db.Column(db.String(64))
+	amount = db.Column(db.Float())
+	paid_date = db.Column(db.DateTime())
+	def __repr__(self):
+		return '<Payment %r>' % self.name
 
 
-@app.route('/')
-def index():
-	return '<h1>Hello World, I am me.finance</h1>'
+class Category(db.Model):
+	__tablename__ = 'categories'
+	id = db.Column(db.Integer, primary_key=True, unique=True)
+	name = db.Column(db.String(64))
+	description = db.Column(db.String(64))
+	payments = db.relationship('Payment')
+	incomes = db.relationship('Income', backref='category', lazy='dynamic')
+	bills = db.relationship('Bill', backref='category', lazy='dynamic')
 
+	def __repr__(self):
+		return '<Category %r>' % self.name
 
-@app.route('/user/<name>')
-def user(name):
-	return '<h1>Hello, %s!</h1>' % name
+class Tip(db.Model):
+	__tablename__ = 'tips'
+	id = db.Column(db.Integer, primary_key=True, unique=True)
+	name = db.Column(db.String(64))
+	description = db.Column(db.String(64))	
+
+	def __repr__(self):
+		return '<Tip %r>' % self.name
+
+parser = reqparse.RequestParser()
+
+class Usr(Resource):
+	resource_fields = {
+    	'username':   fields.String
+	}
+	@marshal_with(resource_fields)
+	def get(self):
+		return User.query.all()
+
+	def post(self):
+		parser.add_argument('username', type=str, required=True)
+		args = parser.parse_args()
+		new_user = User(username=args['username']) 
+		db.session.add(new_user)
+		db.session.commit()
+		return '' , 201
+
+api.add_resource(Usr,	 '/all')
 
 if __name__=='__main__':
 	app.run(debug=True)

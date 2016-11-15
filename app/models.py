@@ -1,29 +1,4 @@
-import os
-from flask import Flask, request
-from flask_restful import Resource, Api, reqparse, fields, marshal_with
-from flask_sqlalchemy import SQLAlchemy
-from flask_script import Manager
-from flask_script import Shell
-from flask_migrate import Migrate, MigrateCommand
-
-basedir = os.path.abspath(os.path.dirname(__file__))
-
-app = Flask(__name__)
-api = Api(app)
-app.config['SQLALCHEMY_DATABASE_URI'] =\
-    'sqlite:///' + os.path.join(basedir, 'data.sqlite')
-app.config['SQLALCHEMY_COMMIT_ON_TEARDOWN'] = True
-app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = True
-db = SQLAlchemy(app)
-
-manager = Manager(app)
-
-def make_shell_context():
-	return dict(app=app, db=db, User=User, Bill=Bill, Income=Income, Payment=Payment, Category=Category, Tip=Tip)
-manager.add_command("shell", Shell(make_context=make_shell_context))
-
-migrate = Migrate(app,db)
-manager.add_command('db', MigrateCommand)
+from app import db
 
 class User(db.Model):
 	__tablename__ = 'users'
@@ -35,10 +10,11 @@ class User(db.Model):
 	bills = db.relationship('Bill')
 	incomes = db.relationship('Income', backref='user', lazy='dynamic')
 	payments = db.relationship('Payment', backref='user', lazy='dynamic')
+	balance = db.relationship('Balance', backref='balances', lazy='dynamic')
 	is_premium = db.Column(db.Boolean(), default=True)
 
 	def __repr__(self):
-		return '<User %r>' % self.username
+		return '<User %r %r>' % self.username % self.id
 
 class Bill(db.Model):
 	__tablename__ = 'bills'
@@ -103,32 +79,12 @@ class Tip(db.Model):
 	def __repr__(self):
 		return '<Tip %r>' % self.name
 
-parser = reqparse.RequestParser()
 
-class Usr(Resource):
-	user_fields = {
-    	'id': fields.String,
-    	'username':   fields.String,
-	}
-	@marshal_with(user_fields)
-	def get(self):
-		return User.query.all()
+class Balance(db.Model):
+	__tablename__= 'balances'
+	id = db.Column(db.Integer, primary_key=True, unique=True)
+	amount = db.Column(db.Integer, primary_key=True, unique=True)
+	user_id = db.Column(db.Integer, db.ForeignKey('users.id'))
 
-	def post(self):
-		parser.add_argument('username', type=str, required=True)
-		parser.add_argument('first_name', type=str, required=True)
-		parser.add_argument('last_name', type=str, required=True)
-		parser.add_argument('password', type=str, required=True)
-		args = parser.parse_args()
-		new_user = User(username=args['username'], 
-						first_name=args['first_name'],
-						last_name=args['last_name'],
-						password=args['password']) 
-		db.session.add(new_user)
-		db.session.commit()
-		return '' , 201
-
-api.add_resource(Usr,	 '/auth/create', '/auth/all')
-
-if __name__=='__main__':
-	app.run(debug=True)
+	def __repr__(self):
+		return '<Balance %r %r>' % self.user_id % self.amount

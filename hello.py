@@ -1,7 +1,8 @@
 import os
 import re
-from flask_bcrypt import Bcrypt
-from flask import Flask, request
+from flask_httpauth import HTTPBasicAuth
+from passlib.apps import custom_app_context as pwd_context
+from flask import Flask, request, g
 from flask_restful import Resource, Api, reqparse, fields, marshal_with
 from flask_sqlalchemy import SQLAlchemy
 from flask_script import Manager
@@ -12,8 +13,7 @@ basedir = os.path.abspath(os.path.dirname(__file__))
 
 app = Flask(__name__)
 api = Api(app)
-bcrypt = Bcrypt(app)
-
+auth = HTTPBasicAuth()
 app.config['SQLALCHEMY_DATABASE_URI'] =\
     'sqlite:///' + os.path.join(basedir, 'data.sqlite')
 app.config['SQLALCHEMY_COMMIT_ON_TEARDOWN'] = True
@@ -35,7 +35,7 @@ class User(db.Model):
 	# username = db.Column(db.String(64), unique=True, index=True)
 	first_name = db.Column(db.String(64))
 	last_name = db.Column(db.String(64))
-	password = db.Column(db.String(64))
+	password = db.Column(db.String(128))
 	email = db.Column(db.String(64), unique=True)
 	bills = db.relationship('Bill')
 	incomes = db.relationship('Income', backref='user', lazy='dynamic')
@@ -44,6 +44,12 @@ class User(db.Model):
 
 	def __repr__(self):
 		return '<User %r>' % self.email
+
+	def hash_password(self, password):
+		self.password = pwd_context.encrypt(password)
+
+	def verify_password(self, password):
+		return pwd_context.verify(password, self.password)
 
 class Bill(db.Model):
 	__tablename__ = 'bills'
@@ -117,6 +123,14 @@ parser = reqparse.RequestParser()
 
 #Validation functions
 
+@auth.verify_password
+def verify_password(email, password):
+    user = User.query.filter_by(email = email).first()
+    if not user or not user.verify_password(password):
+        return False
+    g.user = user
+    return True
+
 def validEmail(email):
 	if not re.match(r"[^@]+@[^@]+\.[^@]+", email):
 		raise ValueError("The email: '{}' is not valid.".format(email))
@@ -125,10 +139,9 @@ def validEmail(email):
 
 def validPassword(password):
 	if len(password) >= 8:
-		return bcrypt.generate_password_hash(password)
+		return password
 	else:
 		raise ValueError("The password mus be at least 8 characters long.")
-
 
 class UserStore(Resource):
 	#Get all users
@@ -145,13 +158,13 @@ class UserStore(Resource):
 	# def get(self):
 	# 	return User.query.all()
 
-	"""Get user by id"""
-	@marshal_with(user_fields)
-	def get(self, id):
-		user = User.query.filter(User.id == id).first()
-		if not user:
-			abort(404, message="User {} doesn't exist".format(id))
-		return user
+	# """Get user by id"""
+	# @marshal_with(user_fields)
+	# def get(self, id):
+	# 	user = User.query.filter(User.id == id).first()
+	# 	if not user:
+	# 		abort(404, message="User {} doesn't exist".format(id))
+	# 	return user
 
 	"""Create user"""
 	@marshal_with(user_fields)
@@ -165,12 +178,22 @@ class UserStore(Resource):
 		new_user = User(first_name=args['first_name'],
 						last_name=args['last_name'],
 						email=args['email'],
-						password=args['password']) 
+						password=args['password'])
+		new_user.hash_password(args['password']) 
 		db.session.add(new_user)
 		db.session.commit()
 		return new_user, 201
 
-api.add_resource(UserStore,	 '/auth/create', '/auth/<int:id>')
+	"""Get user """
+	@auth.login_required
+	@marshal_with(user_fields)
+	def get(self):
+		user = User.query.filter(User.email == g.user.email).first()
+		return user, 201
+
+api.add_resource(UserStore,	 '/auth')
+
+
 
 ############
 #	Bill   #

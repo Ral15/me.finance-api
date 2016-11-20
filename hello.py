@@ -14,10 +14,28 @@ basedir = os.path.abspath(os.path.dirname(__file__))
 app = Flask(__name__)
 api = Api(app)
 auth = HTTPBasicAuth()
-app.config['SQLALCHEMY_DATABASE_URI'] =\
-    'sqlite:///' + os.path.join(basedir, 'data.sqlite')
+app.config["DEBUG"]
+
+SQLALCHEMY_DATABASE_URI = "mysql+mysqlconnector://{username}:{password}@{hostname}/{databasename}".format(
+    username="Ral15",
+    password="me.finance123",
+    hostname="Ral15.mysql.pythonanywhere-services.com",
+    databasename="mefinancedb",
+)
+
+#local
+# app.config['SQLALCHEMY_DATABASE_URI'] =\
+#     'sqlite:///' + os.path.join(basedir, 'data.sqlite')
+# app.config['SQLALCHEMY_COMMIT_ON_TEARDOWN'] = True
+# app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = True
+
+#serve
+app.config['SQLALCHEMY_DATABASE_URI'] = SQLALCHEMY_DATABASE_URI
 app.config['SQLALCHEMY_COMMIT_ON_TEARDOWN'] = True
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = True
+app.config["SQLALCHEMY_POOL_RECYCLE"] = 299
+
+
 db = SQLAlchemy(app)
 
 manager = Manager(app)
@@ -199,5 +217,5 @@ api.add_resource(UserStore,	 '/auth')
 #	Bill   #
 ############
 
-if __name__=='__main__':
-	app.run(debug=True)
+# if __name__=='__main__':
+# 	app.run(debug=True)

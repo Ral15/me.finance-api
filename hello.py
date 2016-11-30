@@ -1,5 +1,6 @@
 import os
 import re
+import datetime
 from flask_httpauth import HTTPBasicAuth
 from passlib.apps import custom_app_context as pwd_context
 from flask import Flask, request, g
@@ -38,12 +39,12 @@ manager.add_command('db', MigrateCommand)
 class User(db.Model):
 	__tablename__ = 'users'
 	id = db.Column(db.Integer, primary_key=True, unique=True)
-	# username = db.Column(db.String(64), unique=True, index=True)
 	first_name = db.Column(db.String(64))
 	last_name = db.Column(db.String(64))
 	password = db.Column(db.String(128))
 	email = db.Column(db.String(64), unique=True)
 	bills = db.relationship('Bill')
+	balance = db.relationship('Balance', backref='user', lazy='dynamic')
 	incomes = db.relationship('Income', backref='user', lazy='dynamic')
 	payments = db.relationship('Payment', backref='user', lazy='dynamic')
 	is_premium = db.Column(db.Boolean(), default=True)
@@ -68,8 +69,15 @@ class Bill(db.Model):
 	description = db.Column(db.String(64))
 	amount = db.Column(db.Float())
 	due_date = db.Column(db.DateTime())
-	paid_date = db.Column(db.Integer, db.ForeignKey('payments.paid_date'))
-	# is_paid = db.Column(db.Boolean())
+	# paid_date = db.Column(db.DateTime())
+	is_paid = db.Column(db.Boolean(), default=False)
+
+	def paidBill(self, payment_status):
+		self.is_paid = payment_status
+		# self.paid_date = datetime.datetime.now()
+
+	def createDueDate(self, date):
+		self.due_date = date
 
 	def __repr__(self):
 		return '<Bill %r>' % self.name
@@ -84,6 +92,9 @@ class Income(db.Model):
 	amount = db.Column(db.Float())
 	received_date = db.Column(db.DateTime())
 
+	# def createReceivedDate(self, date):
+	# 	self.received_date = date
+
 	def __repr__(self):
 		return '<Income %r>' % self.name
 
@@ -96,7 +107,8 @@ class Payment(db.Model):
 	description = db.Column(db.String(64))
 	amount = db.Column(db.Float())
 	paid_date = db.Column(db.DateTime())
-	# bill_id = db.Column(db.Integer, db.ForeignKey('bills.id'))
+	bill_id = db.Column(db.Integer, db.ForeignKey('bills.id'))
+
 	def __repr__(self):
 		return '<Payment %r>' % self.name
 
@@ -122,6 +134,23 @@ class Tip(db.Model):
 
 	def __repr__(self):
 		return '<Tip %r>' % self.name
+
+
+class Balance(db.Model):
+	__tablename__ = 'balances'
+	id = db.Column(db.Integer, primary_key=True, unique=True)
+	amount = db.Column(db.Float, default=0.0)
+	user_id = db.Column(db.Integer, db.ForeignKey('users.id'))
+
+	def addBalance(self, amount):
+		self.amount += amount
+
+	def removeBalance(self, amount):
+		self.amount -= amount
+
+	def __repr__(self):
+		return '<Balance %r>' % self.id
+
 
 parser = reqparse.RequestParser()
 
@@ -194,11 +223,6 @@ api.add_resource(UserStore,	 '/auth')
 ############
 
 
-# def validCategory(id):
-# 	category = Category.query.filter_by(id = id).first()
-# 	if not category:
-# 		raise NotFound("");
-
 class BillStore(Resource):
 	bill_fields = {
 		'id': fields.Integer,
@@ -210,7 +234,14 @@ class BillStore(Resource):
 		'amount': fields.Float,
 		'due_date': fields.DateTime,
 		'paid_date': fields.DateTime,
+		'is_paid' : fields.Boolean
 	}
+
+	@auth.login_required
+	@marshal_with(bill_fields)
+	def get(self):
+		bills = Bill.query.filter_by(user_id=g.user.id).all()
+		return bills, 201
 
 	"""Create bill """
 	@auth.login_required
@@ -220,19 +251,19 @@ class BillStore(Resource):
 		parser.add_argument('description', type=str, required=False)
 		parser.add_argument('category_id', type=int, required=False)
 		parser.add_argument('amount', type=float, help="Amount cannot be blank", required=True)
-		# parser.add_argument('due_date', type=lambda x: datetime.strptime(x,'%Y-%m-%dT%H:%M:%S'), required=True, help="Due date cannot be blank")
+		parser.add_argument('due_date', type=lambda x: datetime.datetime.strptime(x,'%Y-%m-%d'), required=True, help="Due date cannot be blank")
 		args = parser.parse_args()
 		new_bill = Bill(name=args['name'],
 						description=args['description'],
 						amount=args['amount'],
 						category_id=args['category_id'],
-						user_id=g.user.id)
-						# due_date=args['due_date']
+						user_id=g.user.id,
+						due_date=args['due_date'])
 		db.session.add(new_bill)
 		db.session.commit()
 		return new_bill, 201
 
-api.add_resource(BillStore, '/bill')
+api.add_resource(BillStore, '/bill', '/bills')
 
 
 ################
@@ -249,6 +280,12 @@ class CategoryStore(Resource):
 
 	@auth.login_required
 	@marshal_with(category_fields)
+	def get(self):
+		categories = Category.query.filter_by(user_id=g.user.id).all()
+		return categories, 201
+
+	@auth.login_required
+	@marshal_with(category_fields)
 	def post(self):
 		parser.add_argument('name', type=str, help="Name cannot be blank", required=True)
 		parser.add_argument('description', type=str, required=False)
@@ -260,11 +297,15 @@ class CategoryStore(Resource):
 		db.session.commit()
 		return new_category, 201
 
-api.add_resource(CategoryStore, '/category')
+api.add_resource(CategoryStore, '/category', '/categories')
 
 ################
 #	 Income    #
 ################
+
+def addToBalance(amount):
+	balance = Balance.query.filter_by(user_id=g.user.id).first()
+	balance.addBalance(amount)
 
 class IncomeStore(Resource):
 	income_fields = {
@@ -278,26 +319,58 @@ class IncomeStore(Resource):
 
 	@auth.login_required
 	@marshal_with(income_fields)
+	def get(self):
+		incomes = Income.query.filter_by(user_id=g.user.id).all()
+		return incomes, 201
+
+
+	@auth.login_required
+	@marshal_with(income_fields)
 	def post(self):
 		parser.add_argument('name', type=str, required=True, help="Name cannot be blank")
 		parser.add_argument('amount', type=float, required=True, help="Amount cannot be blank")
 		parser.add_argument('category_id', type=int, required=False)
+		# parser.add_argument('received_date', type=setDateTime, required=True)
 		# parser.add_argument('received_date', type=datetime, required=False)
 		args = parser.parse_args()
 		new_income = Income(name=args['name'],
 							amount=args['amount'],
 							category_id=args['category_id'],
-							user_id=g.user.id)
+							user_id=g.user.id, 
+							received_date=datetime.datetime.now())
 		db.session.add(new_income)
 		db.session.commit()
+		addToBalance(args['amount'])
 		return new_income, 201
 
-api.add_resource(IncomeStore, '/income')
+api.add_resource(IncomeStore, '/income', '/incomes')
 
 
 ################
 #	 Payment   #
 ################
+
+""" Substract from balance the amount spend """
+def delBalance(amount):
+	balance = Balance.query.filter_by(user_id=g.user.id).first()
+	balance.removeBalance(amount)
+
+""" Validate that the bill id exists ind db """
+def validBillId(bill_id):
+	bill = Bill.query.get(bill_id)
+	if bill is None:
+		raise ValueError('Bill id does not exist in db')
+	else :
+		bill.paidBill(True)
+		return bill_id
+
+""" Validate that the category id exists """
+def validCategoryId(category_id):
+	category = Category.query.get(category_id)
+	if category is None:
+		raise ValueError('Category id does not exist in db')
+	else:
+		return category_id
 
 class PaymentStore(Resource):
 	payment_fields = {
@@ -306,29 +379,68 @@ class PaymentStore(Resource):
 		'name': fields.String,
 		'category_id': fields.Integer,
 		'description': fields.String,
-		# 'paid_date': fields.DateTime,
-		'amount': fields.Float
+		'paid_date': fields.DateTime,
+		'amount': fields.Float,
+		'bill_id': fields.Integer
 	}
+
+	@auth.login_required
+	@marshal_with(payment_fields)
+	def get(self):
+		payments = Payment.query.all()
+		return payments, 201
 
 	@auth.login_required
 	@marshal_with(payment_fields)
 	def post(self):
 		parser.add_argument('name', type=str, required=True, help="Name cannot be blank")
 		parser.add_argument('amount', type=float, required=True, help="Amount cannot be blank")
-		parser.add_argument('category_id', type=int, required=False)
-		parser.add_argument('description', type=int, required=False)
+		parser.add_argument('category_id', type=validCategoryId, required=False)
+		parser.add_argument('description', type=str, required=False)
+		parser.add_argument('bill_id', type=validBillId, required=False)
 		args = parser.parse_args()
 		new_payment = Payment(name=args['name'], 
 							  amount=args['amount'],
 							  category_id=args['category_id'],
 							  description=args['description'],
-							  user_id=g.user.id)
+							  user_id=g.user.id,
+							  bill_id=args['bill_id'],
+							  paid_date=datetime.datetime.now())
+		delBalance(args['amount'])
 		db.session.add(new_payment)
 		db.session.commit()
 		return new_payment, 201
 
-api.add_resource(PaymentStore, '/payment')
+api.add_resource(PaymentStore, '/payment', '/payments')
 
-## end
-# if __name__=='__main__':
-# 	app.run(debug=True)
+
+################
+#	 Balance   #
+################
+
+class BalanceStore(Resource):
+	balance_fields = {
+		'id': fields.Integer,
+		'user_id': fields.Integer,
+		'amount': fields.Float
+	}
+
+	@auth.login_required
+	@marshal_with(balance_fields)
+	def get(self):
+		balance = Balance.query.filter_by(user_id=g.user.id).first()
+		return balance, 201
+
+	@auth.login_required
+	@marshal_with(balance_fields)
+	def post(self):
+		parser.add_argument('amount', type=float, required=True, help="Amount cannot be blank")
+		args = parser.parse_args()
+		new_balance = Balance(amount=args['amount'],
+							  user_id=g.user.id)
+		db.session.add(new_balance)
+		db.session.commit()
+		# new_balance.addBalance(args['amount'])
+		return new_balance, 201
+
+api.add_resource(BalanceStore, '/balance')
